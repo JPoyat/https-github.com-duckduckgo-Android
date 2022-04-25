@@ -110,6 +110,7 @@ import com.duckduckgo.app.tabs.model.TabEntity
 import com.duckduckgo.app.tabs.model.TabRepository
 import com.duckduckgo.app.trackerdetection.model.TrackingEvent
 import com.duckduckgo.app.usage.search.SearchCountDao
+import com.duckduckgo.autofill.Credentials
 import com.duckduckgo.di.scopes.FragmentScope
 import com.duckduckgo.privacy.config.api.ContentBlocking
 import com.duckduckgo.privacy.config.api.Gpc
@@ -408,6 +409,8 @@ class BrowserTabViewModel @Inject constructor(
             class HideDaxDialog(val cta: Cta) : DaxCommand()
         }
 
+        class InjectCredentials(val url: String, val credentials: Credentials) : Command()
+
         sealed class DownloadCommand : Command() {
             class ScanMediaFiles(val file: File) : DownloadCommand()
             class ShowDownloadFailedNotification(
@@ -424,6 +427,7 @@ class BrowserTabViewModel @Inject constructor(
         }
 
         class EditWithSelectedQuery(val query: String) : Command()
+
     }
 
     val autoCompleteViewState: MutableLiveData<AutoCompleteViewState> = MutableLiveData()
@@ -2577,6 +2581,10 @@ class BrowserTabViewModel @Inject constructor(
             initialUrl
         }
         command.postValue(LoadExtractedUrl(extractedUrl = destinationUrl))
+    }
+
+    fun shareCredentialsWithPage(originalUrl: String, credentials: Credentials) {
+        command.postValue(InjectCredentials(originalUrl, credentials))
     }
 
     companion object {

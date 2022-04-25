@@ -126,7 +126,6 @@ import com.duckduckgo.app.pixels.AppPixelName
 import com.duckduckgo.app.privacy.renderer.icon
 import com.duckduckgo.app.statistics.VariantManager
 import com.duckduckgo.app.statistics.pixels.Pixel
-import com.duckduckgo.app.statistics.pixels.Pixel.PixelParameter.FIRE_BUTTON_STATE
 import com.duckduckgo.app.survey.model.Survey
 import com.duckduckgo.app.survey.ui.SurveyActivity
 import com.duckduckgo.app.tabs.model.TabEntity
@@ -157,6 +156,8 @@ import com.duckduckgo.app.browser.urlextraction.DOMUrlExtractor
 import com.duckduckgo.app.browser.urlextraction.UrlExtractingWebView
 import com.duckduckgo.app.browser.urlextraction.UrlExtractingWebViewClient
 import android.content.pm.ResolveInfo
+import androidx.fragment.app.DialogFragment
+import androidx.fragment.app.setFragmentResultListener
 import com.duckduckgo.anvil.annotations.InjectWith
 import com.duckduckgo.app.browser.BrowserTabViewModel.AccessibilityViewState
 import com.duckduckgo.app.browser.BrowserTabViewModel.AutoCompleteViewState
@@ -175,9 +176,15 @@ import com.duckduckgo.app.global.FragmentViewModelFactory
 import com.duckduckgo.app.global.view.launchDefaultAppActivity
 import com.duckduckgo.app.playstore.PlayStoreUtils
 import com.duckduckgo.app.statistics.isFireproofExperimentEnabled
+import com.duckduckgo.app.statistics.pixels.Pixel.PixelParameter.FIRE_BUTTON_STATE
 import com.duckduckgo.app.widget.AddWidgetLauncher
 import com.duckduckgo.appbuildconfig.api.AppBuildConfig
 import com.duckduckgo.autofill.BrowserAutofill
+import com.duckduckgo.autofill.Callback
+import com.duckduckgo.autofill.CredentialAutofillPickerDialog.Companion.RESULT_KEY_CREDENTIAL_PICKER
+import com.duckduckgo.autofill.CredentialAutofillPickerDialog.Companion.TAG
+import com.duckduckgo.autofill.CredentialAutofillPickerDialogFactory
+import com.duckduckgo.autofill.Credentials
 import com.duckduckgo.di.scopes.FragmentScope
 import com.duckduckgo.remote.messaging.api.RemoteMessage
 import com.google.android.material.snackbar.BaseTransientBottomBar
@@ -300,6 +307,9 @@ class BrowserTabFragment :
 
     @Inject
     lateinit var urlExtractorUserAgent: Provider<UserAgentProvider>
+
+    @Inject
+    lateinit var credentialAutofillPickerDialogFactory: CredentialAutofillPickerDialogFactory
 
     private var urlExtractingWebView: UrlExtractingWebView? = null
 
@@ -789,10 +799,21 @@ class BrowserTabFragment :
             is Command.CopyAliasToClipboard -> copyAliasToClipboard(it.alias)
             is Command.InjectEmailAddress -> injectEmailAddress(it.address)
             is Command.ShowEmailTooltip -> showEmailTooltip(it.address)
+            is Command.InjectCredentials -> injectCredentials(it.url, it.credentials)
             is Command.EditWithSelectedQuery -> {
                 omnibarTextInput.setText(it.query)
                 omnibarTextInput.setSelection(it.query.length)
             }
+        }
+    }
+
+    private fun injectCredentials(url: String, credentials: Credentials) {
+        webView?.let {
+            if (it.url != url) {
+                Timber.w("WebView url has changed since autofill request; bailing")
+                return
+            }
+            browserAutofill.injectCredentials(credentials)
         }
     }
 
@@ -1411,12 +1432,36 @@ class BrowserTabFragment :
             loginDetector.addLoginDetection(it) { viewModel.loginDetected() }
             blobConverterInjector.addJsInterface(it) { url, mimeType -> viewModel.requestFileDownload(url, null, mimeType, true) }
             emailInjector.addJsInterface(it) { viewModel.showEmailTooltip() }
-            browserAutofill.addJsInterface(it)
+            browserAutofill.addJsInterface(
+                it,
+                object : Callback {
+                    override fun onCredentialsAvailable(credentials: List<Credentials>) {
+                        Timber.e("onCredentialsAvailable. %d creds to choose from", credentials.size)
+                        val url = webView?.url ?: return
+                        val dialog = credentialAutofillPickerDialogFactory.create(url, credentials).asDialogFragment()
+                        showDialogHidingPrevious(dialog, TAG)
+                    }
+                }
+            )
+
+            setFragmentResultListener(RESULT_KEY_CREDENTIAL_PICKER) { _, result ->
+                val selectedCredentials = result.getParcelable<Credentials>("cred") ?: return@setFragmentResultListener
+                val originalUrl = result.getString("url") ?: return@setFragmentResultListener
+                viewModel.shareCredentialsWithPage(originalUrl, selectedCredentials)
+            }
         }
 
         if (appBuildConfig.isDebug) {
             WebView.setWebContentsDebuggingEnabled(true)
         }
+    }
+
+    private fun showDialogHidingPrevious(dialog: DialogFragment, tag: String) {
+        childFragmentManager.findFragmentByTag(tag)?.let {
+            Timber.i("Found existing dialog for %s; removing it now", tag)
+            childFragmentManager.commitNow(allowStateLoss = true) { remove(it) }
+        }
+        dialog.show(childFragmentManager, tag)
     }
 
     private fun configureDarkThemeSupport(webSettings: WebSettings) {
@@ -1776,11 +1821,7 @@ class BrowserTabFragment :
         if (isStateSaved) return
 
         val downloadConfirmationFragment = DownloadConfirmationFragment.instance(pendingDownload)
-        childFragmentManager.findFragmentByTag(DOWNLOAD_CONFIRMATION_TAG)?.let {
-            Timber.i("Found existing dialog; removing it now")
-            childFragmentManager.commitNow(allowStateLoss = true) { remove(it) }
-        }
-        downloadConfirmationFragment.show(childFragmentManager, DOWNLOAD_CONFIRMATION_TAG)
+        showDialogHidingPrevious(downloadConfirmationFragment, DOWNLOAD_CONFIRMATION_TAG)
     }
 
     private fun launchFilePicker(command: Command.ShowFileChooser) {
