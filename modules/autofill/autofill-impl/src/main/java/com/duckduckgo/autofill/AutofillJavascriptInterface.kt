@@ -46,7 +46,7 @@ class AutofillJavascriptInterface(
     fun getAutofillData(requestString: String) {
         Timber.i("BrowserAutofill: getAutofillData called:\n%s", requestString)
         getAutofillDataJob += coroutineScope.launch {
-            val request = requestParser.parseRequest(requestString)
+            val request = requestParser.parseAutofillDataRequest(requestString)
             Timber.i("Parsed request\ninputType: %s\nsubType: %s", request.mainType, request.subType)
 
             val url = currentUrl()
@@ -103,6 +103,20 @@ class AutofillJavascriptInterface(
         }
     }
 
+    @JavascriptInterface
+    fun storeFormData(data: String) {
+        Timber.e("storeFormData called %s", data)
+
+        getAutofillDataJob += coroutineScope.launch {
+            val currentUrl = currentUrl() ?: return@launch
+
+            val request = requestParser.parseStoreFormDataRequest(data).credentials
+            val credentials = Credentials(request.username, request.password)
+
+            autofillStore.saveCredentials(currentUrl, credentials)
+        }
+    }
+
     fun injectCredentials(credentials: Credentials) {
         getAutofillDataJob += coroutineScope.launch {
             autofillMessagePoster.postMessage(webView, autofillResponseWriter.generateResponseGetAutofillData(credentials))
@@ -118,5 +132,4 @@ class AutofillJavascriptInterface(
     companion object {
         const val INTERFACE_NAME = "BrowserAutofill"
     }
-
 }
